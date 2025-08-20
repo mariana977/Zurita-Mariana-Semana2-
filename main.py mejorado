@@ -1,0 +1,139 @@
+
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
+from typing import Optional, List, Literal
+from datetime import datetime, date
+
+app = FastAPI(
+    title="Gestión de Tareas - Semana 2",
+   
+    version="1.1.0"
+)
+
+# ==============================
+# MODELOS
+# ==============================
+class UserBase(BaseModel):
+    username: str = Field(..., example="juanperez")
+    email: str = Field(..., example="juan@example.com")
+    language: str = Field("es", example="es")
+    theme: str = Field("light", example="dark")
+    timezone: str = Field("UTC", example="America/Bogota")
+
+class User(UserBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+class CategoryBase(BaseModel):
+    name: str = Field(..., example="Trabajo")
+    description: Optional[str] = Field(None, example="Tareas relacionadas al empleo")
+
+class Category(CategoryBase):
+    id: int
+    user_id: int
+
+class TaskBase(BaseModel):
+    title: str = Field(..., example="Preparar informe mensual")
+    description: Optional[str] = Field(None, example="Informe de ventas de agosto")
+    due_date: Optional[date] = Field(None, example="2025-08-30")
+    priority: Literal["low", "medium", "high", "urgent"] = Field("medium", example="high")
+    status: Literal["pending", "in_progress", "completed", "cancelled"] = Field("pending", example="pending")
+    category_id: Optional[int] = Field(None, example=1)
+    tags: List[str] = Field(default_factory=list, example=["finanzas", "mensual"])
+    user_id: Optional[int] = Field(None, example=1)
+
+class Task(TaskBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+# ==============================
+# BASE DE DATOS EN MEMORIA
+# ==============================
+users: List[User] = []
+categories: List[Category] = []
+tasks: List[Task] = []
+current_user_id = 1
+current_category_id = 1
+current_task_id = 1
+
+# ==============================
+# ENDPOINTS DE USUARIOS
+# ==============================
+@app.post("/users", response_model=User, summary="Registrar nuevo usuario", description="Crea un usuario en el sistema.")
+def create_user(user: UserBase):
+    """Crea un nuevo usuario con fecha de registro automática."""
+    global current_user_id
+    new_user = User(
+        id=current_user_id,
+        username=user.username,
+        email=user.email,
+        language=user.language,
+        theme=user.theme,
+        timezone=user.timezone,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    )
+    users.append(new_user)
+    current_user_id += 1
+    return new_user
+
+# ==============================
+# ENDPOINTS DE CATEGORÍAS
+# ==============================
+@app.post("/categories", response_model=Category, summary="Crear categoría")
+def create_category(category: CategoryBase):
+    """Crea una nueva categoría asociada al primer usuario registrado."""
+    if not users:
+        raise HTTPException(status_code=400, detail="Debe registrarse un usuario antes de crear categorías.")
+    global current_category_id
+    new_category = Category(id=current_category_id, user_id=users[0].id, **category.dict())
+    categories.append(new_category)
+    current_category_id += 1
+    return new_category
+
+# ==============================
+# ENDPOINTS DE TAREAS
+# ==============================
+@app.post("/tasks", response_model=Task, summary="Crear tarea con validación")
+def create_task(task: TaskBase):
+    """Crea una nueva tarea validando usuario y categoría existentes."""
+    global current_task_id
+
+    # Validar usuario
+    if task.user_id and not any(u.id == task.user_id for u in users):
+        raise HTTPException(status_code=400, detail="El usuario no existe.")
+
+    # Validar categoría
+    if task.category_id and not any(c.id == task.category_id for c in categories):
+        raise HTTPException(status_code=400, detail="La categoría no existe.")
+
+    new_task = Task(
+        id=current_task_id,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+        **task.dict()
+    )
+    tasks.append(new_task)
+    current_task_id += 1
+    return new_task
+
+@app.get("/tasks", response_model=List[Task], summary="Listar tareas con filtros")
+def list_tasks(
+    status: Optional[str] = Query(None, description="Filtrar por estado"),
+    priority: Optional[str] = Query(None, description="Filtrar por prioridad"),
+    tag: Optional[str] = Query(None, description="Filtrar por etiqueta"),
+    skip: int = Query(0, ge=0, description="Número de tareas a saltar (paginación)"),
+    limit: int = Query(10, ge=1, description="Número máximo de tareas a devolver")
+):
+    """Lista tareas con filtros opcionales y paginación."""
+    filtered = tasks
+    if status:
+        filtered = [t for t in filtered if t.status == status]
+    if priority:
+        filtered = [t for t in filtered if t.priority == priority]
+    if tag:
+        filtered = [t for t in filtered if tag in t.tags]
+
+    return filtered[skip: skip + limit]
